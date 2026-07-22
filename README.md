@@ -67,3 +67,13 @@ We also have a few other open source repos, such as
 
 - See [deployment guide](https://appflowy.com/docs/Step-by-step-Self-Hosting-Guide---From-Zero-to-Production)
 
+### Self-host unlimited mode
+
+For self-hosted environments, you can enable:
+
+```bash
+APPFLOWY_SELF_HOST_UNLIMITED=true
+```
+
+This makes workspace usage/member limits effectively unlimited in server responses and bypasses member-limit enforcement checks.
+Do **not** enable this in hosted multi-tenant production environments.
