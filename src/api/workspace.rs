@@ -61,7 +61,9 @@ use collab_rt_entity::realtime_proto::HttpRealtimeMessage;
 use collab_rt_entity::user::RealtimeUser;
 use collab_rt_entity::RealtimeMessage;
 use collab_rt_protocol::collab_from_encode_collab;
+use database::resource_usage::get_workspace_usage_size;
 use database::user::select_uid_from_email;
+use database::workspace::select_workspace_member_count_from_workspace_id;
 use database_entity::dto::PublishCollabItem;
 use database_entity::dto::PublishInfo;
 use database_entity::dto::*;
@@ -72,6 +74,7 @@ use rayon::prelude::*;
 
 use semver::Version;
 use sha2::{Digest, Sha256};
+use shared_entity::dto::billing_dto::WorkspaceUsageAndLimit;
 use shared_entity::dto::publish_dto::DuplicatePublishedPageResponse;
 use shared_entity::dto::workspace_dto::*;
 use shared_entity::response::AppResponseError;
@@ -302,6 +305,10 @@ pub fn workspace_scope() -> Scope {
     )
     .service(
       web::resource("/{workspace_id}/usage").route(web::get().to(get_workspace_usage_handler)),
+    )
+    .service(
+      web::resource("/{workspace_id}/usage-and-limit")
+        .route(web::get().to(get_workspace_usage_and_limit_handler)),
     )
     .service(
       web::resource("/published/{publish_namespace}")
@@ -599,6 +606,7 @@ async fn post_accept_workspace_invite_handler(
     user_uid,
     &user_uuid,
     &invite_id,
+    state.config.self_host_unlimited,
   )
   .await?;
   Ok(AppResponse::Ok().into())
@@ -2455,6 +2463,44 @@ async fn get_workspace_usage_handler(
   let res =
     biz::workspace::ops::get_workspace_document_total_bytes(&state.pg_pool, &workspace_id).await?;
   Ok(Json(AppResponse::Ok().with_data(res)))
+}
+
+async fn get_workspace_usage_and_limit_handler(
+  user_uuid: UserUuid,
+  workspace_id: web::Path<Uuid>,
+  state: Data<AppState>,
+) -> Result<Json<AppResponse<WorkspaceUsageAndLimit>>> {
+  let workspace_id = workspace_id.into_inner();
+  let uid = state.user_cache.get_user_uid(&user_uuid).await?;
+  state
+    .workspace_access_control
+    .enforce_role_weak(&uid, &workspace_id, AFRole::Owner)
+    .await?;
+
+  let member_count = select_workspace_member_count_from_workspace_id(&state.pg_pool, &workspace_id)
+    .await?
+    .unwrap_or_default();
+  let storage_bytes = get_workspace_usage_size(&state.pg_pool, &workspace_id).await? as i64;
+  let mut usage = WorkspaceUsageAndLimit {
+    member_count,
+    member_count_limit: biz::workspace::limit::SAFE_UNLIMITED_LIMIT,
+    storage_bytes,
+    storage_bytes_limit: biz::workspace::limit::SAFE_UNLIMITED_LIMIT,
+    storage_bytes_unlimited: false,
+    single_upload_limit: biz::workspace::limit::SAFE_UNLIMITED_LIMIT,
+    single_upload_unlimited: false,
+    ai_responses_count: 0,
+    ai_responses_count_limit: biz::workspace::limit::SAFE_UNLIMITED_LIMIT,
+    ai_image_responses_count: 0,
+    ai_image_responses_count_limit: biz::workspace::limit::SAFE_UNLIMITED_LIMIT,
+    local_ai: false,
+    ai_responses_unlimited: false,
+  };
+  biz::workspace::limit::apply_self_host_unlimited_mode(
+    &mut usage,
+    state.config.self_host_unlimited,
+  );
+  Ok(Json(AppResponse::Ok().with_data(usage)))
 }
 
 async fn get_workspace_folder_handler(

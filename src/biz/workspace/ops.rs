@@ -32,6 +32,7 @@ use crate::biz::user::user_init::{
   create_user_awareness, create_workspace_collab, create_workspace_database_collab,
   initialize_workspace_for_user,
 };
+use crate::biz::workspace::limit::{enforce_workspace_member_limit, SAFE_UNLIMITED_LIMIT};
 use crate::mailer::{AFCloudMailer, WorkspaceInviteMailerParam};
 use crate::state::RedisConnectionManager;
 use shared_entity::dto::workspace_dto::{
@@ -330,6 +331,7 @@ pub async fn accept_workspace_invite(
   user_uid: i64,
   user_uuid: &Uuid,
   invite_id: &Uuid,
+  self_host_unlimited: bool,
 ) -> Result<(), AppError> {
   let mut txn = pg_pool.begin().await?;
   let inv = get_invitation_by_id(&mut txn, invite_id).await?;
@@ -341,6 +343,20 @@ pub async fn accept_workspace_invite(
       )));
     }
   }
+
+  let workspace_member_count =
+    database::workspace::select_workspace_member_count_from_workspace_id(
+      pg_pool,
+      &inv.workspace_id,
+    )
+    .await?
+    .unwrap_or_default();
+  enforce_workspace_member_limit(
+    workspace_member_count,
+    SAFE_UNLIMITED_LIMIT,
+    self_host_unlimited,
+  )?;
+
   update_workspace_invitation_set_status_accepted(&mut txn, user_uuid, invite_id).await?;
   let invited_uid = inv
     .invitee_uid
